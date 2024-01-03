@@ -26,7 +26,10 @@ class App:
         self.master.title("ByteLink Electronics")
         self.master.grid_columnconfigure(0, weight=1)
         #self.master.grid_rowconfigure(0, weight=1)
-        #self.master.resizable(False, False)
+        self.master.resizable(False, False)
+        # Global Variable
+        self.store_items = None
+        # NON global
         icon = Image.open("images/icon/icon.png")
         icon.thumbnail((25,25), Image.Resampling.LANCZOS)
         self.icon_tk = ImageTk.PhotoImage(icon)
@@ -61,7 +64,7 @@ class App:
         #    err.config(text=f"{username} is not found.")
         #    return
 
-        message = f"@login|{username}|{password}".encode("utf-8")
+        message = f"SML@login|{username}|{password}".encode("utf-8")
         self.client.send(message)
         reply = self.client.recv(1024)
         reply = reply.decode("utf-8")
@@ -103,7 +106,7 @@ class App:
             return
         
 
-        message = f"@register|{email}|{username}|{password}".encode("utf-8")
+        message = f"SML@register|{email}|{username}|{password}".encode("utf-8")
         self.client.send(message)
         res = self.client.recv(1024)
         if res == '404':
@@ -113,12 +116,13 @@ class App:
         # redirect to login page
         self.loginpage()
 
+    
     def connector_function(self, ip_address, port):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
      
         try:
             self.client.connect((ip_address, int(port)))
-            self.client.settimeout(1)
+            self.client.settimeout(0.5)
             print("Connection established")
             self.loginpage()
         except Exception as e:
@@ -128,7 +132,7 @@ class App:
         self.server = threading.Thread(target=dh.server)
         self.server.start()
 
-        self.connector_function(socket.gethostbyname(socket.gethostname()), 8888)
+        self.connector_function('26.70.11.90', 8888)
 
     def logout_function(self):
         self.user = None
@@ -161,13 +165,22 @@ class App:
         store_name = self.store_name_entry.get()
         store_location = self.store_location_entry.get("1.0", "end-1c")
         if image_button and store_name and store_location:
-            self.client.send(f"@create_server|{store_name}|{self.image_directory}|{store_location}|{self.user[3]}".encode("utf-8"))
+            with BytesIO() as byte:
+                image = Image.open(self.image_directory)
+                image.thumbnail((100,100), Image.LANCZOS)
+                image.save(byte, "PNG")
+                image_data = byte.getvalue()
+            val = ("create_store",store_name, image_data, store_location, self.user[3])
+            data = pickle.dumps(val)
+            self.client.send(b"BIG"+data)
+            self.client.settimeout(3)
             reply = self.client.recv(4096).decode('utf-8')
             if reply == 'Goods':
                 self.store_page()
-
+                self.client.settimeout(1)
+    
     def all_stores(self):
-        self.client.send("@get_all_store".encode('utf-8'))
+        self.client.send("SML@get_all_store".encode('utf-8'))
         data=b''
         chunk = 4096
         while True:
@@ -468,7 +481,7 @@ class App:
         self.destroy()
         
         def get_products(store_id):
-            self.client.send(f"@get_products|{store_id}".encode("utf-8"))  
+            self.client.send(f"SML@get_products|{store_id}".encode("utf-8"))  
             data=b''
             chunk = 32768
             while True:
@@ -490,7 +503,7 @@ class App:
         self.logout = Button(self.header,font=("Arial 11 bold"), text="Logout",width=9,height=3,borderwidth=0,bg="#698ae8",fg="#f8f9fe", command=self.logout_function)
         self.redirect.pack(side=LEFT)
         self.logout.pack(side=RIGHT)
-        self.client.send(f'@has_store|{self.user[3]}'.encode('utf-8'))
+        self.client.send(f'SML@has_store|{self.user[3]}'.encode('utf-8'))
         if pickle.loads(self.client.recv(1024)) == False:
             self.store = Button(self.header,font=("Arial 11 bold"), text="Create Store",width=12,height=3,bg="#698ae8",fg="#f8f9fe", borderwidth=0,command=self.store_create_page).pack(side=RIGHT,padx=1)
         else:
@@ -511,9 +524,12 @@ class App:
         self.canvas.create_window((0,0), window=self.main_frame , anchor='nw')
         # Main
         # Loopy
-        all_store = self.all_stores()
-
-        all_store = pickle.loads(all_store)
+        
+        if not self.store_items:
+            self.store_items = self.all_stores()
+            print("Check")
+        
+        all_store = pickle.loads(self.store_items)
         for store in all_store:
             _store_id, store_name, store_image, store_location, _user_id = store
             
@@ -622,7 +638,7 @@ class App:
                 i.destroy()
             
         def get_store():
-            self.client.send(f"@get_store|{self.user[3]}".encode("utf-8"))
+            self.client.send(f"SML@get_store|{self.user[3]}".encode("utf-8"))
             data=b''
             chunk = 4096
             while True:
@@ -636,7 +652,7 @@ class App:
             
             return pickle.loads(data)
         
-        def change_photo(btn):
+        def change_photo(btn,frame=None,frame2=None):
             self.img_dir = None
             self.img_dir = filedialog.askopenfilename(filetypes=[("Image Files", "*.png")])
 
@@ -647,11 +663,25 @@ class App:
                 image = ImageTk.PhotoImage(img)
                 btn.config(image=image,compound=TOP)
                 btn.image = image
+                if frame:
+                    frame.update_idletasks()
+                    frame2.config(height=550)
 
         def update_store(image, name, location):
             if not image:
-                image=''
-            self.client.send(f"@update_store|{name}|{image}|{location}|{self.user[3]}".encode('utf-8'))
+                image_data=None
+
+            if image:
+                with BytesIO() as byte:
+                    img = Image.open(image)
+                    img.thumbnail((100,100), Image.LANCZOS)
+                    img.save(byte, "PNG")
+                    image_data = byte.getvalue()
+            
+
+            val = ('update_store',name, image_data, location, self.user[3])
+            comp = pickle.dumps(val)
+            self.client.send(b"BIG" + comp)
 
             reciever = self.client.recv(1024)
             if reciever:
@@ -687,18 +717,29 @@ class App:
                 error.config(text="Please fill the form")
                 return
             img = self.img_dir
-            self.client.send(f"@add_product|{id_}|{img}|{item_name}|{description}|{item_price}|{item_stocks}".encode("utf-8"))
+            with BytesIO() as byte:
+                image = Image.open(img)
+                image.thumbnail((256,256), Image.LANCZOS)
+                image.save(byte, "PNG")
+                image_data = byte.getvalue()
+            
+            val = ("add_product", id_, image_data, item_name, description, item_price, item_stocks)
+            encoded = pickle.dumps(val)
+            self.client.send(b"BIG" + encoded)
+            self.client.settimeout(2)
             reply = self.client.recv(1024).decode("utf-8")
             if reply == 'Success':
                 self.img_dir = None
                 self.products = get_products_function()
                 add_products_frame()
+                self.client.settimeout(1)
             else:
                 self.manage_store_page()
+                self.client.settimeout(1)
         
         def get_products_function():
             print(self.store[0])
-            self.client.send(f"@get_products|{self.store[0]}".encode("utf-8"))  
+            self.client.send(f"SML@get_products|{self.store[0]}".encode("utf-8"))  
             data=b''
             chunk = 32768
             while True:
@@ -731,7 +772,7 @@ class App:
             return True
             
         def delist_function(item_id):
-            self.client.send(f"@delist|{item_id}".encode("utf-8"))
+            self.client.send(f"SML@delist|{item_id}".encode("utf-8"))
             res = self.client.recv(1024).decode('utf-8')
             if res == 'Success':
                 self.products = get_products_function()
@@ -748,9 +789,18 @@ class App:
                 error.config(text="Please fill the form")
                 return
 
-            self.client.send(f'@update_item|{img}|{name}|{description}|{price}|{stock}|{item_id}'.encode('utf-8'))
+            with BytesIO() as byte:
+                img= Image.open(self.img_dir)
+                img.thumbnail((256,256), Image.LANCZOS)
+                img.save(byte, 'PNG')
+                image_data = byte.getvalue()
+            val = ('update_item',image_data,name, description, price,stock, item_id)
+            comp = pickle.dumps(val)
+            self.client.send(b'BIG'+comp)
+            self.client.settimeout(3)
             reply = self.client.recv(1024).decode('utf-8')
             if reply == 'Success':
+                self.client.settimeout(1)
                 self.products = get_products_function()
                 my_products_frame()
                 return
@@ -828,7 +878,7 @@ class App:
             price_ent = ttk.Entry(frame,font=("Arial 16 bold"), validate="key",validatecommand=(validator, "%P"), style="Name.TEntry")
             stock_ent = ttk.Entry(frame,font=("Arial 16 bold"), validate="key",validatecommand=(validator, "%P"), style="Name.TEntry")
             
-            selector_btn.config(command=lambda: change_photo(selector_btn),text="Select Photo...")
+            selector_btn.config(command=lambda: change_photo(selector_btn,frame=frame,frame2=frame_canvas),text="Select Photo...")
             name_entry.insert(0, item_name)
             description.insert(END, item_description)
             price_ent.insert(0, item_price)

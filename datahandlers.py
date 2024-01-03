@@ -61,16 +61,7 @@ def create_store(name,store_image, location, user_id):
 
     #print(name, store_image, location, user_id)
 
-    image = Image.open(store_image)
-    image.thumbnail((100,100), Image.Resampling.LANCZOS)
-    
-    with BytesIO() as byte:
-        image.save(byte, "PNG")
-        image_data = byte.getvalue()
-
-    
-
-    cursor.execute("INSERT INTO Store (store_name,store_image, location, user_id) VALUES (?, ?, ?, ?)", (name,image_data, location, user_id))
+    cursor.execute("INSERT INTO Store (store_name,store_image, location, user_id) VALUES (?, ?, ?, ?)", (name,store_image, location, user_id))
     db.commit()
     db.close()
     return "Goods".encode('utf-8')
@@ -132,13 +123,8 @@ def add_product(id_,img_dir, item_name, item_description, price, stock):
         db = sqlite3.connect('database.db')
         cursor = db.cursor()
 
-        with BytesIO() as byte:
-            img = Image.open(img_dir)
-            img.thumbnail((256,256), Image.Resampling.LANCZOS)
-            img.save(byte, "PNG")
-            image_data = byte.getvalue()
 
-        cursor.execute("INSERT INTO Item (store_id, item_image, item_name, item_description, price, stock) VALUES (?,?,?,?,?,?)", (id_, image_data, item_name, item_description, price, stock))
+        cursor.execute("INSERT INTO Item (store_id, item_image, item_name, item_description, price, stock) VALUES (?,?,?,?,?,?)", (id_, img_dir, item_name, item_description, price, stock))
         
         db.commit()
         db.close()
@@ -181,12 +167,7 @@ def update_item(image=None, name=None, description=None, price=None, stock=None,
         if image:
             print("Image")
             request += ' item_image=?,'
-            with BytesIO() as byte:
-                image = Image.open(image)
-                image.thumbnail((256,256), Image.LANCZOS)
-                image.save(byte, "PNG")
-                image_data = byte.getvalue()
-            value.append(image_data)
+            value.append(image)
         if name:
             print("name")
             request += ' item_name=?,'
@@ -216,7 +197,6 @@ def update_item(image=None, name=None, description=None, price=None, stock=None,
         print(e)
         return "Failure"
 
-
 def commandhandler(string):
     if string.startswith('@'):
         arr = string.split('|')
@@ -225,18 +205,41 @@ def commandhandler(string):
         return arr
     else:
         print("Unknown command")
+
+def validator(inp):
+    try:
+        data = pickle.loads(inp)
+        return data
+    except:
+        return inp.decode('utf-8')
 # handler
 def handler(client):
     while True:
-        data = client.recv(1024)
-        if not data:
-            break
-
-        msg = data.decode('utf-8')
-
-        infos = commandhandler(msg)
-        command = infos[0]
-
+        raw = client.recv(3)
+        if raw.startswith(b'BIG'):
+            client.settimeout(1)
+            data = b''
+            while True:
+                try:
+                    raw = client.recv(1024)
+                    if not raw:
+                        break
+                    data += raw
+                except socket.timeout:
+                    print('error from datahandler')
+                    break
+            
+            client.settimeout(None)
+            infos = pickle.loads(data)
+            command = infos[0]
+        elif raw.startswith(b'SML'):
+            data = client.recv(1024)
+            if not data:
+                break
+            msg = validator(data)
+            infos = commandhandler(msg)
+            command = infos[0]
+        
         if command == 'login':
             user = login(infos[1], infos[2])
             client.send(user)
@@ -245,7 +248,7 @@ def handler(client):
             res = create_account(infos[1], infos[2], infos[3])
             client.send(res)
         
-        if command == 'create_server':
+        if command == 'create_store':
             res = create_store(infos[1], infos[2], infos[3], infos[4])
             client.send(res)
         
@@ -296,7 +299,8 @@ def handler(client):
 def server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    ip = socket.gethostbyname(socket.gethostname())
+    #ip = socket.gethostbyname(socket.gethostname())
+    ip = '26.70.11.90'
     port=8888 # standard socket for this project
 
     server.bind((ip, port))
@@ -310,6 +314,5 @@ def server():
 
 
 if __name__ == "__main__":
-    print(get_all_store())
     print(f"Server started \n\tIP ADDRESS: {socket.gethostbyname(socket.gethostname())}\n\tPORT: 8888")
     server()
