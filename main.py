@@ -118,7 +118,7 @@ class App:
      
         try:
             self.client.connect((ip_address, int(port)))
-            self.client.settimeout(0.1)
+            self.client.settimeout(1)
             print("Connection established")
             self.loginpage()
         except Exception as e:
@@ -568,7 +568,7 @@ class App:
         self.create_style.configure("Create_Style.TFrame", background="#2D4286", borderwidth=4)
         self.create_style.configure("Create_Style.TLabel", font=("Arial 18 bold"), foreground="#F8F9FE",background="#2D4286")
 
-        self.image = Image.open('images/icon/2.png').resize((75,75))
+        self.image = Image.open('images/icon/icon.png').resize((75,75))
 
         self.image = ImageTk.PhotoImage(self.image)
         self.header_img = ttk.Label(self.master, image=self.image, style="Header.TLabel")
