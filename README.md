@@ -7,7 +7,7 @@ ByteLink Electronics is a sophisticated online store built using the Tkinter fra
 Ensure the seamless operation of your server by running the 'datahandlers.py' script, continuing the uninterrupted flow of data processing and management.
 
 ## App
-Initiate the application's core functionality by executing the 'main.py' script, unlocking the full potential of the main app and providing users with a rich and interactive experience.
+Execute the application's core functionality by executing the 'main.py' script, unlocking the full potential of the main app and providing users with a rich and interactive experience. It can also be a server as well!
 ## Database
 Empower your application with essential tables by running the 'test.py' script, crucial for creating a robust and structured database foundation that aligns with your project's vital data requirements.
 
@@ -20,3 +20,6 @@ This software or codebase, unfortunately, lacks optimization in its design, pote
 1. Download everything as ZIP or clone it
 2. Run CMD then type pip install Pillow
 3. run main.py
+
+## BUGS as of now
+Server can't read image from other device.
