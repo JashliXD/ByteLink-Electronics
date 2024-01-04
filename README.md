@@ -22,4 +22,4 @@ This software or codebase, unfortunately, lacks optimization in its design, pote
 3. run main.py
 
 ## BUGS as of now
-Server can't read image from other device.
+The app is slow and crashes !!
