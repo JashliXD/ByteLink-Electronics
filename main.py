@@ -1,14 +1,13 @@
 from tkinter import *
 from tkinter import ttk
 from tkinter import filedialog
-import socket
 import threading
 import ast
 import json
 import os
 import base64
 import pickle
-
+import asyncio
 # my modules
 import datahandlers as dh
 import utils
@@ -29,18 +28,24 @@ class App:
         self.master.resizable(False, False)
         # Global Variable
         self.store_items = None
+        self.store_products = None
+        self.loop = None
         # NON global
         icon = Image.open("images/icon/icon.png")
         icon.thumbnail((25,25), Image.Resampling.LANCZOS)
         self.icon_tk = ImageTk.PhotoImage(icon)
         self.master.iconphoto(False, self.icon_tk)
-        self.connectorpage()
+        self.master.after(0, self.start)
+    
+    def start(self):
+        self.master.event_loop = asyncio.get_event_loop()
+        self.master.event_loop.run_until_complete(self.connectorpage())
     
     def destroy(self):
         for i in self.master.winfo_children():
             i.destroy()
 
-    def login_function(self, username, password, err):
+    async def login_function(self, username, password, err):
         if username == "":
             err.config(text="Please enter a username")
             return
@@ -65,9 +70,10 @@ class App:
         #    return
 
         message = f"SML@login|{username}|{password}".encode("utf-8")
-        self.client.send(message)
-        reply = self.client.recv(1024)
-        reply = reply.decode("utf-8")
+        self.writer.write(message)
+        await self.writer.drain()
+        reply = await self.reader.read(1024)
+        reply = reply.decode('utf-8')
         if reply == "UNKNOWN_USER":
             err.config(text="User not found")
             return
@@ -81,9 +87,9 @@ class App:
                 data = {"user": str(cookie_user)[2:], "pass": str(cookie_pass)[2:]}
                 json.dump(data, file)
         self.user = ast.literal_eval(reply)
-        self.store_page()
+        await self.store_page()
 
-    def register_function(self, email ,username, password, err):
+    async def register_function(self, email ,username, password, err):
         # Error handlings
         if email == "":
             err.config(text="Please enter valid email address")
@@ -107,8 +113,9 @@ class App:
         
 
         message = f"SML@register|{email}|{username}|{password}".encode("utf-8")
-        self.client.send(message)
-        res = self.client.recv(1024)
+        self.writer.write(message)
+        await self.writer.drain()
+        res = await self.reader.read(1024)
         if res == '404':
             err.config(text="Something went wrong. Please try again.")
             return
@@ -116,28 +123,40 @@ class App:
         # redirect to login page
         self.loginpage()
 
-    
-    def connector_function(self, ip_address, port):
-        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-     
+    async def on_closing(self):
+        self.writer.write(b'&@&')
+        await self.writer.drain()
+        if self.loop:
+            self.loop.stop()
+        self.master.destroy()
+      
+    async def connector_function(self, ip_address, port):
         try:
-            self.client.connect((ip_address, int(port)))
-            self.client.settimeout(0.5)
+            self.reader, self.writer = await asyncio.open_connection(ip_address, int(port))
+            self.master.protocol("WM_DELETE_WINDOW", lambda: self.master.event_loop.run_until_complete(self.on_closing()))
             print("Connection established")
-            self.loginpage()
+            await self.loginpage()
         except Exception as e:
             print(f"Error Connecting : {e}")
+  
+    def server_side(self, ip_address, port):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
 
-    def host_function(self):
-        self.server = threading.Thread(target=dh.server)
+        self.loop.run_until_complete(dh.server(ip_address, port))
+    
+    async def host_function(self, ip_address, port):
+        self.server = threading.Thread(target=self.server_side,args= (ip_address, port))
         self.server.start()
 
-        self.connector_function('26.70.11.90', 8888)
-
-    def logout_function(self):
+        await self.connector_function(ip_address, port)
+    
+    async def logout_function(self):
         self.user = None
+        self.store_products = None
+        self.store_items = None
 
-        self.loginpage()
+        await self.loginpage()
     
     def remember_me_cookies(self):
         file = 'creds.cookies'
@@ -160,7 +179,7 @@ class App:
             self.image_button.config(image = store_img, compound=TOP)
             self.image_button.image = store_img
 
-    def create_store(self):
+    async def create_store(self):
         image_button = self.image_button.image
         store_name = self.store_name_entry.get()
         store_location = self.store_location_entry.get("1.0", "end-1c")
@@ -172,28 +191,29 @@ class App:
                 image_data = byte.getvalue()
             val = ("create_store",store_name, image_data, store_location, self.user[3])
             data = pickle.dumps(val)
-            self.client.send(b"BIG"+data)
-            self.client.settimeout(3)
-            reply = self.client.recv(4096).decode('utf-8')
+            self.writer.write(b"BIG"+data)
+            await self.writer.drain()
+            reply = self.readrer.read(4096)
+            reply = reply.decode('utf-8')
             if reply == 'Goods':
                 self.store_page()
-                self.client.settimeout(1)
     
-    def all_stores(self):
-        self.client.send("SML@get_all_store".encode('utf-8'))
+    async def all_stores(self):
+        self.writer.write("SML@get_all_store".encode('utf-8'))
+        await self.writer.drain()
         data=b''
         chunk = 4096
-        while True:
-            try:
-                data_chunks = self.client.recv(chunk)
+        try:
+            while True:
+                data_chunks = await asyncio.wait_for(self.reader.read(chunk), timeout=1)
                 if not data_chunks:
                     break
                 data += data_chunks
-            except socket.timeout:
-                break
+        except:
+            pass
         return data
 
-    def show_items(self, item):
+    async def show_items(self, item):
         self.destroy()
 
         def update(ent,var, increment=1):
@@ -220,9 +240,9 @@ class App:
         
         self.header.grid_propagate(0)
         self.header.grid_columnconfigure(0, weight=1)
-        home = Button(self.header,command=self.store_page,image=self.icon_tk, text="Store",bg="#698ae8",fg="#f8f9fe", borderwidth=0,width=12,height=3, font=('Arial 11 bold'), compound=LEFT)
+        home = Button(self.header,command=lambda: self.master.event_loop.run_until_complete(self.store_page()),image=self.icon_tk, text="Store",bg="#698ae8",fg="#f8f9fe", borderwidth=0,width=12,height=3, font=('Arial 11 bold'), compound=LEFT)
         home.image=self.icon_tk
-        logout = Button(self.header,command=self.logout_function, text="Logout",bg="#698ae8",fg="#f8f9fe", borderwidth=0,width=9,height=3, font=('Arial 11 bold'))
+        logout = Button(self.header,command=lambda: self.master.event_loop.run_until_complete(self.logout_function()), text="Logout",bg="#698ae8",fg="#f8f9fe", borderwidth=0,width=9,height=3, font=('Arial 11 bold'))
         manage_store = Button(self.header,command=self.manage_store_page, text="Manage Store",bg="#698ae8",fg="#f8f9fe", borderwidth=0,width=12,height=3, font=('Arial 11 bold'))
         logout.grid(sticky=E,row=0,column=2)
         self.header.grid()
@@ -318,7 +338,7 @@ class App:
         frame.update_idletasks()
         frame_canvas.config(height=550)
 
-    def connectorpage(self):
+    async def connectorpage(self):
         self.master.geometry("400x500")
         self.destroy()
         # HEADER
@@ -349,8 +369,8 @@ class App:
         self.ip_entry = ttk.Entry(self.frame0, font=("Arial 18"))
         self.port_lb = Label(self.frame0, font=("Arial 18 bold"), text="Port",bg="#2D4286",fg="#f8f9fe")
         self.port_entry = ttk.Entry(self.frame0, width=9,font=("Arial 18 bold"))
-        self.connect_btn = ttk.Button(self.frame0, text="Connect",style="CStyle.TButton", command=lambda: self.connector_function(self.ip_entry.get(), self.port_entry.get()))
-        self.host_btn = ttk.Button(self.frame0, text="Host",style="CStyle.TButton", command=self.host_function)
+        self.connect_btn = ttk.Button(self.frame0, text="Connect",style="CStyle.TButton", command=lambda: self.master.event_loop.run_until_complete(self.connector_function(self.ip_entry.get(),self.port_entry.get())))
+        self.host_btn = ttk.Button(self.frame0, text="Host",style="CStyle.TButton", command=lambda: self.master.event_loop.run_until_complete(self.host_function(self.ip_entry.get(),self.port_entry.get())))
 
         self.ip_lb.pack(anchor='w',padx=5,pady=3)
         self.ip_entry.pack(anchor='w',padx=5,pady=3)
@@ -359,7 +379,7 @@ class App:
         self.connect_btn.pack(anchor='w',padx=5,pady=9)
         self.host_btn.pack(anchor='w',padx=5,pady=3,side="bottom")
 
-    def loginpage(self):
+    async def loginpage(self):
         self.master.geometry("800x600")
         self.destroy()
         # Style
@@ -403,7 +423,7 @@ class App:
         self.users = ttk.Entry(self.frame0, font="Arial 18")
         self.password = ttk.Entry(self.frame0, show="*", font="Arial 18")
         self.error = ttk.Label(self.frame0, style="LStyle-Error.TLabel")
-        self.login_btn = ttk.Button(self.frame0, text="Login",style="LStyle.TButton" , command=lambda: self.login_function(self.users.get(), self.password.get(), self.error))
+        self.login_btn = ttk.Button(self.frame0, text="Login",style="LStyle.TButton" , command=lambda: self.master.event_loop.run_until_complete(self.login_function(self.users.get(), self.password.get(), self.error)))
         self.remember = ttk.Checkbutton(self.frame0, text="Remember Me!", variable=self.remember_me)
         self.label3 = ttk.Label(self.frame0, text="Not yet registered?", style="LStyle-Register.TLabel")
         self.register_btn = ttk.Button(self.frame0, text="Register", command=self.registerpage, style="LStyle.TButton")
@@ -423,40 +443,51 @@ class App:
     
     def registerpage(self):
         self.destroy()
+        
+        image = Image.open('images/icon/icon.png')
+        image.thumbnail((75,75), Image.LANCZOS)
+        img = ImageTk.PhotoImage(image)
+        
+        self.header = Label(self.master, text="Register", font=("Arial 30 bold"), fg="#F8F9FE", background="#353BA7")
+        self.header_img = Label(self.master, image=img, background="#353BA7", fg="#F8F9FE")
+        self.header_img.image = img
 
-        self.frame1 = Frame(self.master, width=400, height=400)
+        self.header_img.pack()
+        self.header.pack()
+        
+        
+        self.frame1 = Frame(self.master, width=400, height=400, background="#2D4286")
         self.frame1.pack()
+        self.frame1.pack_propagate(0)
 
-        self.label0 = Label(self.frame1, text="Register")
-
-        self.mail = Label(self.frame1, text="Email: ")
-        self.username = Label(self.frame1, text="Username: ")
-        self.password = Label(self.frame1, text="Password: ")
-        self.error = Label(self.frame1, fg="red")
-
-        self.register_btn = Button(self.frame1, text="Register", command=lambda: self.register_function(self.email.get(), self.user.get(), self.passcode.get(), self.error))
-
-        self.label1 = Label(self.frame1, text="Already Have Account?")
-        self.login_btn = Button(self.frame1, text="Login Page", command=self.loginpage)
-
-        self.email = Entry(self.frame1)
-        self.user = Entry(self.frame1)
-        self.passcode = Entry(self.frame1, show="*")
         
-        self.label0.grid()
-        
-        self.mail.grid(row=1, column=1)
-        self.username.grid(row=2, column=1)
-        self.password.grid(row=3, column=1)
-        
-        self.email.grid(row=1, column=2)
-        self.user.grid(row=2, column=2)
-        self.passcode.grid(row=3, column=2)
+        self.mail = Label(self.frame1, font=('Arial 11 bold'), text="Email: ", fg="#F8F9FE", background="#2D4286")
+        self.username = Label(self.frame1, font=('Arial 11 bold'), text="Username: ", fg="#F8F9FE", background="#2D4286")
+        self.password = Label(self.frame1, font=('Arial 11 bold'), text="Password: ", fg="#F8F9FE", background="#2D4286")
+        self.error = Label(self.frame1, font=('Arial 11 bold'), fg="red", background="#2D4286")
 
-        self.register_btn.grid(row=4,column=2, pady=10)
-        self.error.grid(row=5, column=2)
-        self.label1.grid(row=6, column=1)
-        self.login_btn.grid(row=6, column=2)
+        self.register_btn = Button(self.frame1, font=('Arial 11 bold'), fg="#698ae8",borderwidth=0, text="Register", command=lambda: self.master.event_loop.run_until_complete(self.register_function(self.email.get(), self.user.get(), self.passcode.get(), self.error)))
+
+        self.label1 = Label(self.frame1, font=('Arial 11 bold'), background="#2D4286", fg="#F8F9FE", text="Already Have Account?")
+        self.login_btn = Button(self.frame1, font=('Arial 11 bold'), fg="#698ae8", text="Login Page", command=self.loginpage)
+
+        self.email = Entry(self.frame1, font=('Arial 11 bold'), fg="#698ae8")
+        self.user = Entry(self.frame1, font=('Arial 11 bold'), fg="#698ae8")
+        self.passcode = Entry(self.frame1, show="*", font=('Arial 11 bold'), fg="#698ae8")
+        
+        
+        self.mail.grid(row=1, column=1,pady=3,padx=3)
+        self.username.grid(row=2, column=1,pady=3,padx=3)
+        self.password.grid(row=3, column=1,pady=3,padx=3)
+        
+        self.email.grid(row=1, column=2,pady=3,padx=3)
+        self.user.grid(row=2, column=2,pady=3,padx=3)
+        self.passcode.grid(row=3, column=2,pady=3,padx=3)
+
+        self.register_btn.grid(row=4,column=2, pady=10,padx=3)
+        self.error.grid(row=5, column=2,pady=3,padx=3)
+        self.label1.grid(row=6, column=1,pady=3,padx=3)
+        self.login_btn.grid(row=6, column=2,pady=3,padx=3)
 
     def selection_page(self, user):
         self.destroy()
@@ -477,34 +508,36 @@ class App:
         #self.store_btn.grid(row=2, column=1)
         self.shop_btn.grid(row=3, column=2)
 
-    def store_page(self):
+    async def store_page(self, update=False):
         self.destroy()
         
-        def get_products(store_id):
-            self.client.send(f"SML@get_products|{store_id}".encode("utf-8"))  
+        async def get_products(store_id):
+            self.writer.write(f"SML@get_products|{store_id}".encode("utf-8"))  
             data=b''
             chunk = 32768
-            while True:
-                try:
-                    raw_data = self.client.recv(chunk)
+            try:
+                while True:
+                    raw_data = await asyncio.wait_for(self.reader.read(chunk), timeout=1)
                     #print(raw_data)
                     if not raw_data:
                         break
                     data += raw_data
-                except:
-                    break
+            except:
+                #print("Done")
+                pass
             return pickle.loads(data)
         
         self.header = Frame(self.master,bg='#353BA7')
         self.header.pack(fill=BOTH)
 
-        self.redirect = Button(self.header,image=self.icon_tk,font=("Arial 11 bold"), text="Store",width=9,height=3,borderwidth=0,bg="#698ae8",fg="#f8f9fe", command=self.store_page, compound=LEFT)
+        self.redirect = Button(self.header,image=self.icon_tk,font=("Arial 11 bold"), text="Store",width=9,height=3,borderwidth=0,bg="#698ae8",fg="#f8f9fe", command=lambda: self.master.event_loop.run_until_complete(self.store_page()), compound=LEFT)
         self.redirect.image = self.icon_tk
-        self.logout = Button(self.header,font=("Arial 11 bold"), text="Logout",width=9,height=3,borderwidth=0,bg="#698ae8",fg="#f8f9fe", command=self.logout_function)
+        self.logout = Button(self.header,font=("Arial 11 bold"), text="Logout",width=9,height=3,borderwidth=0,bg="#698ae8",fg="#f8f9fe", command=lambda: self.master.event_loop.run_until_complete(self.logout_function()))
         self.redirect.pack(side=LEFT)
         self.logout.pack(side=RIGHT)
-        self.client.send(f'SML@has_store|{self.user[3]}'.encode('utf-8'))
-        if pickle.loads(self.client.recv(1024)) == False:
+        self.writer.write(f'SML@has_store|{self.user[3]}'.encode('utf-8'))
+        await self.writer.drain()
+        if pickle.loads(await self.reader.read(1024)) == False:
             self.store = Button(self.header,font=("Arial 11 bold"), text="Create Store",width=12,height=3,bg="#698ae8",fg="#f8f9fe", borderwidth=0,command=self.store_create_page).pack(side=RIGHT,padx=1)
         else:
             self.store = Button(self.header,font=("Arial 11 bold"), text="Manage Store", width=12, height=3,bg="#698ae8",fg="#f8f9fe",borderwidth=0, command=self.manage_store_page).pack(side=RIGHT,padx=1)
@@ -524,10 +557,16 @@ class App:
         self.canvas.create_window((0,0), window=self.main_frame , anchor='nw')
         # Main
         # Loopy
+        if update:
+            self.store_items = None
+            self.store_products = None
         
         if not self.store_items:
-            self.store_items = self.all_stores()
-            print("Check")
+            self.store_items = await asyncio.wait_for(self.all_stores(), timeout=0.8)
+            all_stores = pickle.loads(self.store_items)
+            #print("Check")
+        if not self.store_products:
+            self.store_products = {i[0]:await get_products(i[0]) for i in all_stores}
         
         all_store = pickle.loads(self.store_items)
         for store in all_store:
@@ -557,7 +596,7 @@ class App:
             item_frame = Frame(store_frame, background="#698AE8",width=750)
             item_frame.grid(row=1,column=0)
             item_frame.grid_propagate(0)
-            items_raw = get_products(_store_id)
+            items_raw = self.store_products.get(_store_id)
             label3.config(text=str(len(items_raw))+" items")
             items = utils.reshape(items_raw, 5)
             # buttons...
@@ -568,7 +607,7 @@ class App:
                     image = Image.open(BytesIO(item[0]))
                     image.thumbnail((100,100), Image.LANCZOS)
                     img_tk = ImageTk.PhotoImage(image)
-                    btn = Button(item_frame, text=utils.trimmer(item[1],9), command=lambda x=item: self.show_items(x), image=img_tk,width=width,height=height,compound=TOP, anchor='s')
+                    btn = Button(item_frame, text=utils.trimmer(item[1],9), command=lambda x=item: self.master.event_loop.run_until_complete(self.show_items(x)), image=img_tk,width=width,height=height,compound=TOP, anchor='s')
                     btn.image = img_tk
                     btn.grid(row=x,column=y,padx=10,pady=pady)
             height_calculation = (height + 2 * pady) * len(items) + (2 * (pady) * len(items))
@@ -618,8 +657,8 @@ class App:
         self.store_location_entry = Text(self.main_frame, height=5, width=25)
         self.store_location_entry.grid(row=2,column=1,pady=5)
         
-        self.back_btn = ttk.Button(self.main_frame, text="Back", command=self.store_page)
-        self.create_store_btn = ttk.Button(self.main_frame, text="Create Store", command=self.create_store)
+        self.back_btn = ttk.Button(self.main_frame, text="Back", command=lambda: self.master.event_loop.run_until_complete(self.store_page()))
+        self.create_store_btn = ttk.Button(self.main_frame, text="Create Store", command=lambda: self.master.event_loop.run_until_complete(self.create_store()))
 
         self.back_btn.grid(row=3)
         self.create_store_btn.grid(row=3,column=1,pady=30)
@@ -637,18 +676,20 @@ class App:
             for i in self.main_frame.winfo_children():
                 i.destroy()
             
-        def get_store():
-            self.client.send(f"SML@get_store|{self.user[3]}".encode("utf-8"))
+        async def get_store():
+            self.writer.write(f"SML@get_store|{self.user[3]}".encode("utf-8"))
+            await self.writer.drain()
             data=b''
             chunk = 4096
-            while True:
-                try:
-                    raw_data = self.client.recv(chunk)
+            try:
+                while True:
+                    raw_data = await asyncio.wait_for(self.reader.read(chunk), timeout=1)
                     if not raw_data:
                         break
                     data += raw_data
-                except:
-                    break
+            except:
+                #print("Timeout STORE - 660")
+                pass
             
             return pickle.loads(data)
         
@@ -667,7 +708,7 @@ class App:
                     frame.update_idletasks()
                     frame2.config(height=550)
 
-        def update_store(image, name, location):
+        async def update_store(image, name, location):
             if not image:
                 image_data=None
 
@@ -681,11 +722,11 @@ class App:
 
             val = ('update_store',name, image_data, location, self.user[3])
             comp = pickle.dumps(val)
-            self.client.send(b"BIG" + comp)
-
-            reciever = self.client.recv(1024)
+            self.writer.write(b"BIG" + comp)
+            await self.writer.drain()
+            reciever = await self.reader.read(1024)
             if reciever:
-                self.store_page()
+                await self.store_page(update=True)
 
         def button_handler(btn, cmd):
             if cmd == self.selected_page:
@@ -706,7 +747,7 @@ class App:
                 self.selected_page = 'my_products'
                 my_products_frame()
 
-        def add_product_function(img_dir=None, product_name=None, product_description=None, price=None, stock=None, error=None):
+        async def add_product_function(img_dir=None, product_name=None, product_description=None, price=None, stock=None, error=None):
             img = img_dir.image
             item_name = product_name.get()
             description = product_description.get("1.0", "end-1c")
@@ -725,32 +766,33 @@ class App:
             
             val = ("add_product", id_, image_data, item_name, description, item_price, item_stocks)
             encoded = pickle.dumps(val)
-            self.client.send(b"BIG" + encoded)
-            self.client.settimeout(2)
-            reply = self.client.recv(1024).decode("utf-8")
+            self.writer.write(b"BIG" + encoded)
+            reply = await self.reader.read(1024)
+            reply = reply.decode('utf-8')
             if reply == 'Success':
                 self.img_dir = None
                 self.products = get_products_function()
                 add_products_frame()
-                self.client.settimeout(1)
             else:
                 self.manage_store_page()
-                self.client.settimeout(1)
         
-        def get_products_function():
-            print(self.store[0])
-            self.client.send(f"SML@get_products|{self.store[0]}".encode("utf-8"))  
+        async def get_products_function():
+            self.writer.write(f"SML@get_products|{self.store[0]}".encode("utf-8"))
+            await self.writer.drain()
             data=b''
             chunk = 32768
-            while True:
-                try:
-                    raw_data = self.client.recv(chunk)
+            try:
+                while True:
+                
+                    raw_data = await asyncio.wait_for(self.reader.read(chunk), timeout=0.8)
                     #print(raw_data)
                     if not raw_data:
                         break
                     data += raw_data
-                except:
-                    break
+            except:
+                #print("760 Error")
+                pass
+            
             return pickle.loads(data)
 
         def validation_input(val):
@@ -771,14 +813,16 @@ class App:
                 return False
             return True
             
-        def delist_function(item_id):
-            self.client.send(f"SML@delist|{item_id}".encode("utf-8"))
-            res = self.client.recv(1024).decode('utf-8')
+        async def delist_function(item_id):
+            self.writer.write(f"SML@delist|{item_id}".encode("utf-8"))
+            await self.writer.drain()
+            res = await self.reader.read(1024)
+            res = res.decode('utf-8')
             if res == 'Success':
                 self.products = get_products_function()
                 my_products_frame()
         
-        def update_item(item_name=None, item_description=None, price_=None, stock_=None, item_id=None, error=None):
+        async def update_item(item_name=None, item_description=None, price_=None, stock_=None, item_id=None, error=None):
             img = self.img_dir
             name = item_name.get()
             description = item_description.get("1.0", "end-1c")
@@ -796,12 +840,12 @@ class App:
                 image_data = byte.getvalue()
             val = ('update_item',image_data,name, description, price,stock, item_id)
             comp = pickle.dumps(val)
-            self.client.send(b'BIG'+comp)
-            self.client.settimeout(3)
-            reply = self.client.recv(1024).decode('utf-8')
+            self.writer.write(b'BIG'+comp)
+            await self.writer.drain()
+            reply = await self.reader.read(1024)
+            reply = reply.decode('utf-8')
             if reply == 'Success':
-                self.client.settimeout(1)
-                self.products = get_products_function()
+                self.products = await get_products_function()
                 my_products_frame()
                 return
             print(reply)
@@ -908,8 +952,8 @@ class App:
             update_btn = Button(frame, text="Update", font=("Arial 16 bold"), foreground="#f8f9fe",background="#508871",borderwidth=0)
 
             back_btn.config(command=my_products_frame)
-            delist_btn.config(command=lambda: delist_function(item_id=item_id))
-            update_btn.config(command=lambda: update_item(item_name=name_entry, item_description=description, price_=price_ent, stock_=stock_ent, item_id=item_id, error=error_lb))
+            delist_btn.config(command=lambda: self.master.event_loop.run_until_complete(delist_function(item_id=item_id)))
+            update_btn.config(command=lambda: self.master.event_loop.run_until_complete(update_item(item_name=name_entry, item_description=description, price_=price_ent, stock_=stock_ent, item_id=item_id, error=error_lb)))
 
             back_btn.grid(row=7,column=0,pady=10)
             delist_btn.grid(row=7,column=1,pady=10)
@@ -960,7 +1004,7 @@ class App:
             
             store_image_btn.config(command=lambda: change_photo(store_image_btn))
 
-            update_btn = ttk.Button(frame, text='Update', command=lambda: update_store(self.img_dir, store_name.get(), store_location.get("1.0", "end-1c")))
+            update_btn = ttk.Button(frame, text='Update', command=lambda: self.master.event_loop.run_until_complete(update_store(self.img_dir, store_name.get(), store_location.get("1.0", "end-1c"))))
 
             header_label.grid(row=0,columnspan=2)
             label.grid(row=1,column=0)
@@ -1012,7 +1056,7 @@ class App:
             price_entry = ttk.Entry(frame, style="Name.TEntry", font=("Arial 16 bold"),width=5,validate='key', validatecommand=(validation, '%P'))
             product_stock = ttk.Entry(frame, style="Name.TEntry", font=("Arial 16 bold"),width=5,validate='key', validatecommand=(validation, '%P'))
 
-            add_product_btn = Button(frame, text="Add Product", command=lambda: add_product_function(selector_btn, name_entry, product_text, price_entry, product_stock, error=error_lb))
+            add_product_btn = Button(frame, text="Add Product", command=lambda: self.master.event_loop.run_until_complete(add_product_function(selector_btn, name_entry, product_text, price_entry, product_stock, error=error_lb)))
 
             selector_btn.config(command=lambda: change_photo(selector_btn))
             selector_btn.image = None
@@ -1056,7 +1100,7 @@ class App:
             frame = Frame(canvas,bg='#F8F9FE')
             canvas.create_window((0,0), window=frame,anchor='nw')
             # Rest of code here ----
-            reshape = utils.reshape(self.products, 4)
+            reshape = utils.reshape(self.products_mg, 4)
             for x, shape in enumerate(reshape):
                 for y, item in enumerate(shape):
                     byte = BytesIO(item[0])
@@ -1074,8 +1118,8 @@ class App:
             frame.update_idletasks()
             frame_canvas.config(height=550)
         
-        self.store = get_store()
-        self.products = get_products_function()
+        self.store = self.master.event_loop.run_until_complete(get_store())
+        self.products_mg = self.master.event_loop.run_until_complete(get_products_function())
         self.header_tk = ttk.Frame(self.master,width=800,height=50, style="HEADER.TFrame")
         self.header_tk.grid(row=0,column=0, columnspan=2)
         self.header_tk.grid_columnconfigure(0, weight=1)
@@ -1101,9 +1145,9 @@ class App:
         self.myproducts_btn.grid(row=2)
         self.products_btn.grid(row=3)
 
-        self.store_btn = Button(self.header_tk,width=12,height=3, text="Store",bg="#e1e7f6",fg="#698ae8", command=self.store_page,borderwidth=0,font=("Arial 11 bold"), image=self.icon_tk,compound=LEFT)
+        self.store_btn = Button(self.header_tk,width=12,height=3, text="Store",bg="#e1e7f6",fg="#698ae8", command=lambda: self.master.event_loop.run_until_complete(self.store_page(update=True)),borderwidth=0,font=("Arial 11 bold"), image=self.icon_tk,compound=LEFT)
         self.store_btn.image = self.icon_tk
-        self.logout_btn = Button(self.header_tk,width=12,height=3, text="Logout",bg="#e1e7f6",fg="#698ae8", command=self.logout_function,borderwidth=0,font=("Arial 11 bold"))
+        self.logout_btn = Button(self.header_tk,width=12,height=3, text="Logout",bg="#e1e7f6",fg="#698ae8", command=lambda: self.master.event_loop.run_until_complete(self.logout_function()),borderwidth=0,font=("Arial 11 bold"))
         self.logout_btn.grid(row=0,column=1,sticky=E)
         self.header_tk.update_idletasks()
         self.store_btn.config(width=self.logout_btn.winfo_width(),height=self.logout_btn.winfo_height())

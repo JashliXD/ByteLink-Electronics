@@ -3,9 +3,7 @@ from hashlib import sha256
 import socket
 import threading
 import pickle
-
-from PIL import Image
-from io import BytesIO
+import asyncio
 
 # not yet updated to server / client version
 def create_account(email, username, password):
@@ -86,7 +84,7 @@ def get_user_store(user_id):
 
     return store
 
-def update_store(name=None, image_path=None, location=None, user_id=None):
+def update_store(name=None, image_data=None, location=None, user_id=None):
     db = sqlite3.connect('database.db')
     cursor = db.cursor()
 
@@ -97,14 +95,9 @@ def update_store(name=None, image_path=None, location=None, user_id=None):
         print("Name")
         request += ' store_name=?,'
         value.append(name)
-    if image_path:
+    if image_data:
         print("Image Path")
         request += ' store_image=?,'
-        with BytesIO() as byte:
-            image = Image.open(image_path)
-            image.thumbnail((100,100), Image.Resampling.LANCZOS)
-            image.save(byte, "PNG")
-            image_data = byte.getvalue()
         value.append(image_data)
     if location:
         print("Location")
@@ -212,72 +205,83 @@ def validator(inp):
         return data
     except:
         return inp.decode('utf-8')
-# handler
-def handler(client):
+
+async def handler_async(reader, writer):
+    print(f"User: {reader} {writer}")
     while True:
-        raw = client.recv(3)
+        raw = await reader.read(3)
+        if not raw:
+            break
+        
         if raw.startswith(b'BIG'):
-            client.settimeout(1)
             data = b''
-            while True:
-                try:
-                    raw = client.recv(1024)
-                    if not raw:
+            try:
+                while True:
+                    raw_data = await asyncio.wait_for(reader.read(1024), timeout=0.8)
+                    if not raw_data:
                         break
-                    data += raw
-                except socket.timeout:
-                    print('error from datahandler')
-                    break
+                    data += raw_data
+            except:
+                print("Timeout data")
             
-            client.settimeout(None)
             infos = pickle.loads(data)
             command = infos[0]
         elif raw.startswith(b'SML'):
-            data = client.recv(1024)
+            data = await reader.read(1024)
+            print(data)
             if not data:
                 break
             msg = validator(data)
             infos = commandhandler(msg)
             command = infos[0]
         
+        if raw == b'&@&':
+            break
+
         if command == 'login':
             user = login(infos[1], infos[2])
-            client.send(user)
+            writer.write(user)
+            await writer.drain()
         
         if command == 'register':
             res = create_account(infos[1], infos[2], infos[3])
-            client.send(res)
+            writer.write(res)
+            await writer.drain()
         
         if command == 'create_store':
             res = create_store(infos[1], infos[2], infos[3], infos[4])
-            client.send(res)
+            writer.write(res)
+            await writer.drain()
         
         if command == 'has_store':
             res = has_store(int(infos[1]))
-            client.send(pickle.dumps(res))
+            writer.write(pickle.dumps(res))
+            await writer.drain()
         
         if command == 'get_all_store':
             res = get_all_store()
             for i in range(0, len(res), 4096):
                 chunk = res[i:i+4096]
-                client.sendall(chunk)
+                writer.write(chunk)
+                await writer.drain()
 
         if command == 'get_store':
             res = get_user_store(int(infos[1]))
             compile = pickle.dumps(res) # compiles into bytes
             for i in range(0, len(compile), 4096):
                 chunk = compile[i:i+4096]
-                client.sendall(chunk)
+                writer.write(chunk)
+                await writer.drain()
         
         if command == 'update_store':
-            print(msg)
-            print(infos)
             res = update_store(infos[1],infos[2],infos[3], int(infos[4]))
-            client.send(res)
+            writer.write(res)
+            await writer.drain()
 
         if command == 'add_product':
             res = add_product(infos[1], infos[2], infos[3], infos[4], int(infos[5]), int(infos[6]))
-            client.send(res.encode('utf-8'))
+            writer.write(res.encode('utf-8'))
+            await writer.drain()
         
         if command == 'get_products':
             res = get_products_user(infos[1])
@@ -285,34 +289,32 @@ def handler(client):
             compile = pickle.dumps(res)
             for i in range(0 , len(compile), chunk):
                 part = compile[i:i+chunk]
-                client.sendall(part)
+                writer.write(part)
+                await writer.drain()
             
         if command == 'delist':
             res = delist_item(int(infos[1]))
-            client.send(res.encode('utf-8'))
+            writer.write(res.encode('utf-8'))
+            await writer.drain()
         
         if command == 'update_item':
             res = update_item(infos[1], infos[2], infos[3], float(infos[4]),int(infos[5]), int(infos[6]))
-            client.send(res.encode('utf-8'))
-    client.close()
-# server
-def server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            writer.write(res.encode('utf-8'))
+            await writer.drain()
+    print("Shutting down")
 
-    #ip = socket.gethostbyname(socket.gethostname())
-    ip = '26.70.11.90'
-    port=8888 # standard socket for this project
+async def server(ip, port):
+    server = None
+    try:
+        server = await asyncio.start_server(handler_async, ip, port)
 
-    server.bind((ip, port))
-
-    server.listen()
-    while True:
-        client, addr = server.accept()
-        print(f"Connection established with {client} | {addr}")
-        client_handler = threading.Thread(target=handler, args=(client,))
-        client_handler.start()
-
+        #host, port_ = server.sockets[0].getsockname()
+        print("Server listening")
+        async with server:
+            await server.serve_forever()
+    except:
+        print("Error")
 
 if __name__ == "__main__":
     print(f"Server started \n\tIP ADDRESS: {socket.gethostbyname(socket.gethostname())}\n\tPORT: 8888")
-    server()
+    asyncio.run(server(socket.gethostbyname(socket.gethostname()), 8888))
