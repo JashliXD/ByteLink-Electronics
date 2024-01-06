@@ -121,7 +121,7 @@ class App:
             return
 
         # redirect to login page
-        self.loginpage()
+        await self.loginpage()
 
     async def on_closing(self):
         self.writer.write(b'&@&')
