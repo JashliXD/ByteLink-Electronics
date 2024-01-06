@@ -193,7 +193,7 @@ class App:
             data = pickle.dumps(val)
             self.writer.write(b"BIG"+data)
             await self.writer.drain()
-            reply = self.readrer.read(4096)
+            reply = await self.reader.read(4096)
             reply = reply.decode('utf-8')
             if reply == 'Goods':
                 self.store_page()
